@@ -13,11 +13,20 @@ library(rvest)
   Sys.sleep(sample(seq(1, 2, by = 0.001), 1))
 }
 
-.gen_remote_driver <- function(...) {
-  driver <- rsDriver(...)
-  remote_driver <- driver[["client"]]
+.gen_remote_driver <- function(driver, ...) {
+  if (is.null(driver)) {
+    driver <- rsDriver(...)
+    remote_driver <- driver[["client"]]
+  } else {
+    remote_driver <- driver
+    driver <- NA
+  }
+  if (!is(remote_driver, "remoteDriver")) {
+    stop("Invalid Selenium remote driver")
+  }
+  remote_driver$open()
   remote_driver$navigate("https://lihkg.com")
-  return(list(driver, remote_driver))
+  list(driver, remote_driver)
 }
 
 .crack_it <- function(url, remote_driver){
@@ -160,8 +169,8 @@ library(rvest)
 Lihkg_reader <- R6::R6Class(
   "lihkg_reader",
   public = list(
-    initialize = function(...) {
-      res <- .gen_remote_driver(...)
+    initialize = function(driver = NULL, ...) {
+      res <- .gen_remote_driver(driver, ...)
       private$remote_driver <- res[[2]]
       private$driver <- res[[1]]
     },
@@ -190,7 +199,8 @@ Lihkg_reader <- R6::R6Class(
     },
     finalize = function() {
       private$remote_driver$close()
-      private$driver[["server"]]$stop()            
+      if (!is.na(private$driver))
+        private$driver[["server"]]$stop()            
     },
     print = function() {
       cat("<LIHKG Posts>\n")

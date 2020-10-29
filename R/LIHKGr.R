@@ -22,7 +22,7 @@ library(rvest)
     driver <- NA
   }
   if (!is(remote_driver, "remoteDriver")) {
-    stop("Invalid Selenium remote driver")
+    stop("Invalid Selenium remote driver.")
   }
   remote_driver$open()
   remote_driver$navigate("https://lihkg.com")
@@ -32,22 +32,26 @@ library(rvest)
 .crack_it <- function(url, remote_driver){
   remote_driver$navigate(url)
   Sys.sleep(sample(seq(3, 5, by = 0.001), 1))
-  collapsed <- remote_driver$findElements("xpath", "//div[@class='_1d3Z5jQRq3WnuIm0hnMh0c']")
+  # collapsed comments: emoji-only & massive downvoted comments
+  collapsed <- remote_driver$findElements("xpath", "//div[@class='_1d3Z5jQRq3WnuIm0hnMh0c']|
+                                          //div[@class='_2cNsJna0_hV8tdMj3X6_gJ']/div/span[@class='_3vdrhTaWJyZ7pYkFWJM1_n']|
+                                          //blockquote/div/div/span[@class='_3vdrhTaWJyZ7pYkFWJM1_n']")
   if (length(collapsed)) { # click collapsed comments if any
     for (x in collapsed) {
       x$clickElement()
+      #Sys.sleep(sample(seq(0, 1, by = 0.001), 1))
     }
   }
   html <- remote_driver$getPageSource()
   if(grepl("recaptcha_widget", html[[1]])) {
-    readline(prompt="Captcha Detected. Press [enter] to continue after solving")
+    readline(prompt = "Captcha Detected. Press [enter] to continue after solving")
     return(.crack_it(url, remote_driver)) # make sure collapsed comments are expanded
   }
   pg <-  read_html(html[[1]])
   if (length(collapsed)) { # remove any additional page accidentally loaded when clicking collapsed comments
     xml_remove(xml_find_all(pg, "//div[@class='_3jxQCFWg9LDtkSkIVLzQ8L']")[-1])
   }
-  return(pg)
+  pg
 }
 
 .scrape_page <- function(html, postid){
@@ -107,63 +111,97 @@ library(rvest)
   newdf
 }
 
-.scrape_post <- function(postid, remote_driver) {
+.scrape_post <- function(postid, remote_driver, board) {
   posts <- tibble::tibble()
-  for(i in 1:999){
-    attempt <- 1
-    notdone <- TRUE
-    nextpage <- FALSE
-    
-    while(notdone && attempt <= 4) { # Auto restart when fails
-      print(paste0("Attempt: ", attempt))
-      attempt <- attempt + 1
-      try({
-        html <- .crack_it(paste0("https://lihkg.com/thread/", postid, "/page/", i), remote_driver)
-        next.page <- html %>% html_node("._3omJTNzI7U7MErH1Cfr3gE+ ._3omJTNzI7U7MErH1Cfr3gE a") %>% 
-          html_text()
-        titlewords <- html %>% html_nodes("._2k_IfadJWjcLJlSKkz_R2- span") %>% 
-          html_text() %>% 
-          length()
-        if ("下一頁" %in% next.page) {
-          print(paste0("page ", i, " (to be continued)"))
-          post <- .scrape_page(html, postid)
-          posts <- dplyr::bind_rows(posts, post)
-          nextpage <- TRUE
-          notdone <- FALSE
-        } else if (titlewords == 1) {
-          notdone <- FALSE
-          posts <- tibble::tibble(number = "ERROR", date = "ERROR", uid = "ERROR", text = "ERROR", private = "ERROR",
-                                  quote = "ERROR", pvote = "ERROR", downvote = "ERROR", postid = postid,
-                                  title = "Deleted Post", board = "ERROR", collection_time = Sys.time())
-          print("Empty Post, Skipping")
-        } else {
-          print(paste0("page ", i, " (last page)"))
-          post <- .scrape_page(html, postid)
-          posts <- dplyr::bind_rows(posts, post)
-          notdone <- FALSE
-        }
-        .lay_low()
-        })
-    } # End of While Loop
-    if (notdone && attempt > 4) {
-      if (titlewords == 2 && nrow(posts) > 1) {
-        warning <- tibble::tibble(number = "EMPTY LAST PAGE", date = "EMPTY LAST PAGE", uid = "ERROR", text = "ERROR", private = "ERROR",
-                                  quote = "ERROR", upvote = "ERROR", downvote = "ERROR", postid = postid, title = "Deleted Last Page",
-                                  board = "ERROR", collection_time = Sys.time())
-        posts <- dplyr::bind_rows(posts, warning)
-        print("Empty Last Page Detected")
+  message("Start crawling post ", postid)
+  print("Start crawling page 1")
+  # Page 1
+  attempt <- 1
+  notdone <- TRUE
+  while (notdone && attempt <= 4) {
+    print(paste0("Attempt: ", attempt))
+    attempt <- attempt + 1
+    try({
+      html <- .crack_it(paste0("https://lihkg.com/thread/", postid, "/page/1"), remote_driver)
+      titlewords <- html %>% html_nodes("._2k_IfadJWjcLJlSKkz_R2- span") %>% 
+        html_text()
+      if (titlewords[1] == "404") { # Deleted post
+        title <- tibble::tibble(postid = postid, date = NA, uid = NA, probation = NA,
+                                title = "Deleted Post", board = NA, upvote = NA,
+                                downvote = NA, collection_time = Sys.time())
+        print("Empty Post, Skipping")
+        return(list(title = title))
+      } else if (is.null(board) | titlewords[1] %in% board) { # Normal post
+        posts <- .scrape_page(html, postid)
+        if (any(is.na(posts$postid))) # prevent NA postid
+          stop("postid is NA")
+        title <- posts[1, c("postid", "date", "uid", "probation", "title", "board",
+                            "upvote", "downvote", "collection_time")]
         notdone <- FALSE
-      } else {
-        stop("Error, Stopping")
+      } else { # Unwanted post
+        title <- .scrape_page(html, postid)
+        if (any(is.na(title$postid))) # prevent NA postid
+          stop("postid is NA")
+        title <- title[1, c("postid", "date", "uid", "probation", "title", "board",
+                            "upvote", "downvote", "collection_time")]
+        print("Non-matching board, Fetched title only")
+        return(list(title = title))
+      }
+    })
+    if (notdone && attempt > 4) {
+      stop("Error, Stopping")
+    }
+  }
+  last_page <- html %>% html_node("._1H7LRkyaZfWThykmNIYwpH option:last-child") %>%
+    html_attr("value") %>%
+    as.numeric()
+  while (!length(last_page)) { # To make sure
+    last_page <- html %>% html_node("._1H7LRkyaZfWThykmNIYwpH option:last-child") %>%
+      html_attr("value") %>%
+      as.numeric()
+  }
+  # Page 2+
+  if (last_page > 1) {
+    print("Finished crawling page 1 (to be continued)")
+    for (i in 2:last_page) {
+      print(paste0("Start crawling page ", i, " of ", last_page))
+      attempt <- 1
+      notdone <- TRUE
+      while (notdone && attempt <= 4) { # Auto restart when fails
+        print(paste0("Attempt: ", attempt))
+        attempt <- attempt + 1
+        try({
+          html <- .crack_it(paste0("https://lihkg.com/thread/", postid, "/page/", i), remote_driver)
+          titlewords <- html %>% html_nodes("._2k_IfadJWjcLJlSKkz_R2- span") %>% 
+            html_text()
+          post <- .scrape_page(html, postid)
+          posts <- dplyr::bind_rows(posts, post)
+          if (i == last_page)
+            print(paste0("Finished crawling page ", i, " (last page)"))
+          else
+            print(paste0("Finished crawling page ", i, " (to be continued)"))
+          notdone <- FALSE
+          .lay_low()
+        })
+      } # End of While Loop
+      if (notdone && attempt > 4) {
+        if (length(titlewords) == 2 && nrow(posts) > 1) {
+          warning <- tibble::tibble(number = "ERROR", date = NA, uid = NA, probation = NA,
+                                    text = "Deleted Last Page", private = NA, quote = NA, upvote = NA,
+                                    downvote = NA, postid = postid, title = "Deleted Last Page",
+                                    board = NA, collection_time = Sys.time())
+          posts <- dplyr::bind_rows(posts, warning)
+          print("Empty Last Page Detected")
+          notdone <- FALSE
+        } else {
+          stop("Error, Stopping")
+        }
       }
     }
-    if (nextpage) {
-      next
-    } else if(!notdone) {
-      break
-    }
-  } # End of For Loop
-  return(posts)
+  } else {
+    print("Finished crawling page 1 (last page)")
+  }
+  list(title = title, posts = posts)
 }
 
 Lihkg_reader <- R6::R6Class(
@@ -174,45 +212,33 @@ Lihkg_reader <- R6::R6Class(
       private$remote_driver <- res[[2]]
       private$driver <- res[[1]]
     },
-    scrape = function(postid) {
-      self$bag <- rbind(self$bag, .scrape_post(postid, private$remote_driver))
-    },
-    save = function(file_name) {
-      saveRDS(self$bag, file_name)
-    },
-    scrape_alot = function(postids) {
-      res <- purrr::map(postids, purrr::safely(.scrape_post), remote_driver = private$remote_driver)
-      failed_ids <- postids[!purrr::map_lgl(purrr::map(res, "error"), is.null)]
-      if (length(failed_ids) >= 1) {
-        private$failed <- append(private$failed, failed_ids)
+    scrape = function(postid, board = NULL) {
+      scraped <- .scrape_post(postid, private$remote_driver, board)
+      if (!is.null(scraped[["posts"]])) {
+        self$posts <- rbind(self$posts, scraped[["posts"]])
       }
-      self$bag <- dplyr::bind_rows(self$bag, purrr::map_df(res, "result"))
+      self$titles <- rbind(self$titles, scraped[["title"]])
     },
-    retry = function() {
-      if (length(private$failed) == 0) {
-        stop("No failed post id.")
-      }
-      self$scrape_alot(private$failed)
+    save = function(file_name, folder = NULL, ...) {
+      folder <- ifelse(is.null(folder), "", paste0(folder, "/"))
+      saveRDS(self$titles, file = paste0(folder, "title_", file_name), ...)
+      saveRDS(self$posts, file = paste0(folder, "post_", file_name), ...)
     },
     clear = function() {
-      self$bag <- tibble::tibble()
+      self$titles <- tibble::tibble()
+      self$posts <- tibble::tibble()
     },
     finalize = function() {
       private$remote_driver$close()
       if (!is.na(private$driver))
         private$driver[["server"]]$stop()            
     },
-    print = function() {
-      cat("<LIHKG Posts>\n")
-      cat("\tCollected Posts:", nrow(self$bag), "\n")
-      cat("\tFailed attempt:", length(private$failed), "\n")
-    },
-    bag = tibble::tibble()
+    titles = tibble::tibble(),
+    posts = tibble::tibble()
   ),
   private = list(
     remote_driver = NULL,
-    driver = NULL,
-    failed = c()
+    driver = NULL
   )
 )
 

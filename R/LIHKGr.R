@@ -241,24 +241,3 @@ Lihkg_reader <- R6::R6Class(
     driver = NULL
   )
 )
-
-### This method of using ... is better because some people (actually a lot of people) are using selenium inside Docker. So that they don't need to be restricted with only running it on their own machine.
-
-lihkg <- Lihkg_reader$new(browser = "firefox", port = sample(10000:60000, 1))
-
-lihkg$scrape(1891333)
-### the bag is now public.
-lihkg$bag
-
-### Reproduce the original one.
-### TODO: mock a test for failed scraping.
-lihkg$scrape_alot(1610753:1610755)
-
-lihkg$bag %>% print(n = 1000)
-
-### IF there is anything missed, one can do this. (Haven't tested.)
-lihkg$retry()
-
-lihkg$save("lihkg.RDS")
-
-lihkg$finalize()
